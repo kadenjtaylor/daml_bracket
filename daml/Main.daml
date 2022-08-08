@@ -1,6 +1,7 @@
 module Main where
 
 import Daml.Script
+import DA.List (isInfixOf, unique)
 
 type AssetId = ContractId Asset
 
@@ -19,6 +20,25 @@ template Asset
       controller owner
       do create this with
            owner = newOwner
+
+
+-- ==================================
+
+type RosterId = ContractId Roster
+
+template Roster
+  with
+    judge : Party
+    entrants : [Party]
+  where
+    signatory judge
+    observer entrants
+
+    -- no duplicate entrants, judge may not enter
+    ensure unique entrants && not ([judge] `isInfixOf` entrants)
+
+
+-- ==================================
 
 setup : Script AssetId
 setup = script do
