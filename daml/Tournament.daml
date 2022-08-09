@@ -1,0 +1,118 @@
+module Tournament where
+
+import DA.Map
+import DA.Foldable (Foldable(maximum))
+
+type MatchIndex = Int
+
+data MatchRef
+  = PartyRef with
+    p: Party
+  | IndexRef with
+    index: MatchIndex
+  deriving (Eq, Show, Ord)
+
+data Match
+  = Bye with
+    p: MatchRef
+  | Vs with
+    p1: MatchRef
+    p2: MatchRef
+      deriving (Eq, Show)
+
+data PartialBracket = PartialBracket with
+  round: [MatchIndex]
+  matches: Map MatchIndex Match
+    deriving (Eq, Show)
+
+data Bracket
+  = Empty
+  | NonEmpty with
+      root: MatchIndex
+      roster: Map MatchIndex Match
+    deriving (Eq, Show)
+
+data MatchReport = MatchReport with
+  index: MatchIndex
+  winner: Party
+    deriving (Eq, Show)
+
+data BracketUpdateError
+  = BracketEmpty
+  | BracketAlreadyComplete
+  | PlayerNotActive with
+    p: Party
+  | NoSuchMatch with
+    id: MatchIndex
+  | UnknownError with
+    msg: Text
+      deriving (Eq, Show)
+
+bracketize: [Party] -> Bracket
+bracketize [] = Empty
+bracketize ps = finalize $ toPartial $ matchUp ps
+
+matchUp: [Party] -> [Match]
+matchUp [] = []
+matchUp [p] = [Bye (PartyRef p)]
+matchUp (p1 :: p2 :: rest) = Vs (PartyRef p1) (PartyRef p2) :: matchUp rest
+
+nextIndex: [MatchIndex] -> MatchIndex
+nextIndex [] = 0
+nextIndex indicies = maximum indicies + 1
+
+finalize: PartialBracket -> Bracket
+finalize (PartialBracket [] m) = Empty
+finalize (PartialBracket [i] m) = NonEmpty with
+  root = i
+  roster = m
+finalize (PartialBracket (i1 :: i2 :: rest) matches) =
+  do
+  let i = nextIndex (i1 :: i2 :: rest)
+      nextMatch = Vs (IndexRef i1) (IndexRef i2)
+  finalize PartialBracket with
+    round = rest ++ [i]
+    matches = insert i nextMatch matches
+
+toPartial: [Match] -> PartialBracket
+toPartial ms = foldl load emptyPartial ms
+
+emptyPartial : PartialBracket
+emptyPartial = PartialBracket with
+  round = []
+  matches = empty
+
+load: PartialBracket -> Match -> PartialBracket
+load (PartialBracket r m) toLoad =
+  do
+  let i = nextIndex r
+  PartialBracket with
+    round = r ++ [i]
+    matches = insert i toLoad m
+
+
+-- TODO: Implement
+isWellFormed: Bracket -> Bool
+isWellFormed b = True
+
+-- TODO: Implement
+playersIn: Bracket -> [Party]
+playersIn b = []
+
+type TournamentId = ContractId Tournament
+
+template Tournament
+  with
+    judge: Party
+    bracket: Bracket
+  where
+    ensure isWellFormed bracket
+    signatory judge
+    observer playersIn bracket
+  
+    -- TODO: Report result
+    -- If the result is incompatible with the current
+    -- bracket, fail. Else update the bracket.
+
+    -- If the resulting bracket is Complete, pay the winner.
+    -- Otherwise, just create the new bracket.

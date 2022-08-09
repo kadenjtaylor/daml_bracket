@@ -2,6 +2,8 @@ module Main where
 
 import Daml.Script
 import DA.List (isInfixOf, unique)
+import DA.Text (asciiToLower)
+import Tournament
 
 type AssetId = ContractId Asset
 
@@ -21,7 +23,6 @@ template Asset
       do create this with
            owner = newOwner
 
-
 -- ==================================
 
 type RosterId = ContractId Roster
@@ -37,19 +38,34 @@ template Roster
     -- no duplicate entrants, judge may not enter
     ensure unique entrants && not ([judge] `isInfixOf` entrants)
 
+    choice Bracketize: TournamentId
+      with
+      controller judge
+      do
+        let b = bracketize entrants
+        create Tournament with
+          judge = judge
+          bracket = b
 
 -- ==================================
 
+-- TODO: Understand the difference between ALL THIS stuff
+--       and just "allocateParty" from the examples
+-- For now, Just abstract it away into "setup"
+setupUser: Text -> Script Party
+setupUser name = do
+  party <- allocatePartyWithHint name (PartyIdHint name)
+  partyId <- validateUserId (asciiToLower name)
+  createUser (User partyId (Some party)) [CanActAs party]
+  return party
+
+setupUsers: [Text] -> Script [Party]
+setupUsers names = mapA setupUser names
+
 setup : Script AssetId
 setup = script do
--- user_setup_begin
-  alice <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
-  bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
-  aliceId <- validateUserId "alice"
-  bobId <- validateUserId "bob"
-  createUser (User aliceId (Some alice)) [CanActAs alice]
-  createUser (User bobId (Some bob)) [CanActAs bob]
--- user_setup_end
+
+  [alice, bob, charlie, dave, elsa] <- setupUsers ["Alice", "Bob", "Charlie", "Dave", "Elsa"]
 
   aliceTV <- submit alice do
     createCmd Asset with
