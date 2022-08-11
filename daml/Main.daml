@@ -42,10 +42,9 @@ template Roster
       with
       controller judge
       do
-        let b = bracketize entrants
         create Tournament with
           judge = judge
-          bracket = b
+          bracket = bracketize entrants
 
 -- ==================================
 
@@ -62,10 +61,10 @@ setupUser name = do
 setupUsers: [Text] -> Script [Party]
 setupUsers names = mapA setupUser names
 
-setup : Script AssetId
+setup : Script TournamentId
 setup = script do
 
-  [alice, bob, charlie, dave, elsa] <- setupUsers ["Alice", "Bob", "Charlie", "Dave", "Elsa"]
+  [alice, bob, charlie, dave, elsa, frank] <- setupUsers ["Alice", "Bob", "Charlie", "Dave", "Elsa", "Frank"]
 
   aliceTV <- submit alice do
     createCmd Asset with
@@ -78,3 +77,12 @@ setup = script do
 
   submit bob do
     exerciseCmd bobTV Give with newOwner = alice
+
+  roster <- submit elsa do
+    createCmd Roster with
+      judge = elsa
+      entrants = [bob, charlie, dave, alice, frank]
+
+  submit elsa do
+    exerciseCmd roster Bracketize
+

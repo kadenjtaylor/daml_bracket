@@ -2,6 +2,7 @@ module Tournament where
 
 import DA.Map
 import DA.Foldable (Foldable(maximum))
+import DA.Optional (mapOptional, catOptionals)
 
 type MatchIndex = Int
 
@@ -29,7 +30,7 @@ data Bracket
   = Empty
   | NonEmpty with
       root: MatchIndex
-      roster: Map MatchIndex Match
+      matches: Map MatchIndex Match
     deriving (Eq, Show)
 
 data MatchReport = MatchReport with
@@ -65,7 +66,7 @@ finalize: PartialBracket -> Bracket
 finalize (PartialBracket [] m) = Empty
 finalize (PartialBracket [i] m) = NonEmpty with
   root = i
-  roster = m
+  matches = m
 finalize (PartialBracket (i1 :: i2 :: rest) matches) =
   do
   let i = nextIndex (i1 :: i2 :: rest)
@@ -89,7 +90,6 @@ load (PartialBracket r m) toLoad =
   PartialBracket with
     round = r ++ [i]
     matches = insert i toLoad m
-
 
 -- TODO: Implement
 isWellFormed: Bracket -> Bool
