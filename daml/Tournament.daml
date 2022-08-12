@@ -2,7 +2,7 @@ module Tournament where
 
 import DA.Map
 import DA.Foldable (Foldable(maximum))
-import DA.Optional (mapOptional, catOptionals)
+import DA.Optional (mapOptional)
 
 type MatchIndex = Int
 
@@ -40,14 +40,27 @@ data MatchReport = MatchReport with
 
 data BracketUpdateError
   = BracketEmpty
-  | BracketAlreadyComplete
   | PlayerNotActive with
     p: Party
   | NoSuchMatch with
     id: MatchIndex
+  | MatchNotReady with
+    matchId: MatchIndex
+    blockingMatch: MatchIndex
   | UnknownError with
     msg: Text
       deriving (Eq, Show)
+
+data ReportResult
+  = Finished with
+    judge: Party
+    winner: Party
+  | Next with
+    b: Bracket
+  | Error with
+    err: BracketUpdateError
+
+-- ========================================================
 
 bracketize: [Party] -> Bracket
 bracketize [] = Empty
@@ -91,6 +104,27 @@ load (PartialBracket r m) toLoad =
     round = r ++ [i]
     matches = insert i toLoad m
 
+-- Unsure if we need this, might be good for debugging
+
+data ActiveMatch
+  = ActiveBye with
+    p: Party
+  | ActiveVs with
+    p1: Party
+    p2: Party
+      deriving (Eq, Show)
+
+toActive: Match -> Optional ActiveMatch
+toActive m = case m of
+  Vs (PartyRef p1) (PartyRef p2) -> Some $ ActiveVs p1 p2
+  Bye(PartyRef p) -> Some $ ActiveBye p
+  _ -> None
+
+activeMatches: Bracket -> [ActiveMatch]
+activeMatches b = mapOptional toActive (values b.matches)
+
+-- ========================================================
+
 -- TODO: Implement
 isWellFormed: Bracket -> Bool
 isWellFormed b = True
@@ -98,6 +132,20 @@ isWellFormed b = True
 -- TODO: Implement
 playersIn: Bracket -> [Party]
 playersIn b = []
+
+-- TODO: Implement
+applyReport: Bracket -> MatchReport -> ReportResult
+applyReport b r = Error $ UnknownError "Really not sure what happened"
+
+type TrophyId = ContractId Trophy
+
+template Trophy
+  with
+    judge: Party
+    winner: Party
+  where
+    signatory judge
+    observer [judge, winner]
 
 type TournamentId = ContractId Tournament
 
@@ -110,9 +158,16 @@ template Tournament
     signatory judge
     observer playersIn bracket
   
-    -- TODO: Report result
-    -- If the result is incompatible with the current
-    -- bracket, fail. Else update the bracket.
-
-    -- If the resulting bracket is Complete, pay the winner.
-    -- Otherwise, just create the new bracket.
+    choice Report: Either TrophyId TournamentId
+      with
+        report: MatchReport
+      controller judge
+      do
+        case (applyReport bracket report) of
+          Finished judge winner -> do
+            trophyId <- create (Trophy judge winner)
+            return $ Left trophyId
+          Next newBracket -> do
+            tournamentId <- create (this with bracket = newBracket)
+            return $ Right tournamentId
+          Error msg -> error (show msg)
