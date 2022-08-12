@@ -1,9 +1,8 @@
 module Tournament where
 
-import DA.Map (fromList, delete, empty, insert, values, Map, lookup)
-import DA.Foldable (Foldable(maximum))
-import DA.Optional (mapOptional)
-import DA.Map (toList)
+import DA.Map (null, size, fromList, delete, empty, insert, values, Map, lookup, toList)
+import DA.Foldable (foldMap, Foldable(maximum))
+import DA.Optional (catOptionals, isNone, mapOptional)
 
 type MatchIndex = Int
 
@@ -105,8 +104,12 @@ load (PartialBracket r m) toLoad =
     round = r ++ [i]
     matches = insert i toLoad m
 
--- Unsure if we need this, might be good for debugging
+-- ========================================================
+--      Extra Bit for Debugging / Data Egress
+-- ========================================================
 
+-- TODO: Add MatchIndex to ActiveMatch
+-- That way we can generate a Matchreport externally
 data ActiveMatch
   = ActiveBye with
     p: Party
@@ -126,14 +129,42 @@ activeMatches b = mapOptional toActive (values b.matches)
 
 -- ========================================================
 
--- TODO: Implement
+indexRefsOf: Match -> [MatchIndex]
+indexRefsOf (Bye (IndexRef i)) = [i]
+indexRefsOf (Vs (IndexRef i1) (IndexRef i2)) = [i1, i2]
+indexRefsOf (Vs (IndexRef i1) _) = [i1]
+indexRefsOf (Vs _ (IndexRef i2)) = [i2]
+indexRefsOf _ = []
+
+partyRefsOf: Match -> [Party]
+partyRefsOf (Bye (PartyRef p)) = [p]
+partyRefsOf (Vs (PartyRef p1) (PartyRef p2)) = [p1, p2]
+partyRefsOf (Vs (PartyRef p1) _) = [p1]
+partyRefsOf (Vs _ (PartyRef p2)) = [p2]
+partyRefsOf _ = []
+
 isWellFormed: Bracket -> Bool
-isWellFormed b = True
+isWellFormed Empty = True
+isWellFormed (NonEmpty root matches) = formCheck ([root], matches)
 
--- TODO: Implement
+formCheck: ([MatchIndex], Map MatchIndex Match) -> Bool
+formCheck ([], m) | DA.Map.null m = True
+formCheck ([], _) = False
+formCheck (indicies, m) = do
+  let stuff = map (`DA.Map.lookup` m) indicies
+  not (any isNone stuff) &&
+    (do let nextRefs = foldMap indexRefsOf (catOptionals stuff)
+        let nextMap = foldl deleteStep m indicies
+        formCheck (nextRefs, nextMap))
+      
+deleteStep: Ord k => Map k v -> k -> Map k v
+deleteStep m k = delete k m
+
 playersIn: Bracket -> [Party]
-playersIn b = []
+playersIn Empty = []
+playersIn (NonEmpty root matches) = foldMap partyRefsOf (values matches)
 
+-- TODO: Clean
 alterIfDependentOn: MatchReport -> (MatchIndex, Match) -> (MatchIndex, Match)
 alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m@(Vs (IndexRef i) ref))
   | reportIndex == i = (matchindex, Vs (PartyRef winner) ref)
@@ -216,3 +247,8 @@ template Tournament
             tournamentId <- create (this with bracket = newBracket)
             return $ Right tournamentId
           Error msg -> error (show msg)
+
+    nonconsuming choice ActiveMatches: [ActiveMatch]
+      with
+      controller judge
+      do return $ activeMatches bracket
