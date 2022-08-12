@@ -1,8 +1,9 @@
 module Tournament where
 
-import DA.Map
+import DA.Map (fromList, delete, empty, insert, values, Map, lookup)
 import DA.Foldable (Foldable(maximum))
 import DA.Optional (mapOptional)
+import DA.Map (toList)
 
 type MatchIndex = Int
 
@@ -41,19 +42,19 @@ data MatchReport = MatchReport with
 data BracketUpdateError
   = BracketEmpty
   | PlayerNotActive with
+    id: MatchIndex
     p: Party
   | NoSuchMatch with
     id: MatchIndex
   | MatchNotReady with
     matchId: MatchIndex
-    blockingMatch: MatchIndex
+    blocking: [MatchIndex]
   | UnknownError with
     msg: Text
       deriving (Eq, Show)
 
 data ReportResult
   = Finished with
-    judge: Party
     winner: Party
   | Next with
     b: Bracket
@@ -133,9 +134,53 @@ isWellFormed b = True
 playersIn: Bracket -> [Party]
 playersIn b = []
 
--- TODO: Implement
+alterIfDependentOn: MatchReport -> (MatchIndex, Match) -> (MatchIndex, Match)
+alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m@(Vs (IndexRef i) ref))
+  | reportIndex == i = (matchindex, Vs (PartyRef winner) ref)
+alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m@(Vs ref (IndexRef i)))
+  | reportIndex == i = (matchindex, Vs ref (PartyRef winner))
+alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m@(Bye (IndexRef i)))
+  | reportIndex == i = (matchindex, Bye (PartyRef winner))
+alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m) = (matchindex, m)
+
+-- TODO: Clean
 applyReport: Bracket -> MatchReport -> ReportResult
-applyReport b r = Error $ UnknownError "Really not sure what happened"
+applyReport Empty _ = Error BracketEmpty
+applyReport (NonEmpty root matches) report@(MatchReport index winner) =
+  case (DA.Map.lookup index matches) of
+    -- The only cases we really care about
+    Some(Bye(PartyRef p)) ->
+      if p == winner then
+        if root == index then
+          Finished winner
+        else
+          do
+            let m = delete index matches
+                pairs = toList m
+                updated = map (alterIfDependentOn report) pairs
+                newMatches = fromList updated
+            Next $ (NonEmpty root newMatches)
+      else
+        Error $ PlayerNotActive index winner
+    Some(Vs (PartyRef p1) (PartyRef p2)) ->
+      if p1 == winner || p2 == winner then
+        if root == index then
+          Finished winner
+        else
+          do
+            let m = delete index matches
+                pairs = toList m
+                updated = map (alterIfDependentOn report) pairs
+                newMatches = fromList updated
+            Next $ (NonEmpty root newMatches)
+      else
+        Error $ PlayerNotActive index winner
+    -- Dealing with inactive/missing matches
+    Some(Bye(IndexRef i)) -> Error $ MatchNotReady index [i]
+    Some(Vs (IndexRef i1) (IndexRef i2)) -> Error $ MatchNotReady index [i1, i2]
+    Some(Vs (_) (IndexRef i)) -> Error $ MatchNotReady index [i]
+    Some(Vs (IndexRef i) (_)) -> Error $ MatchNotReady index [i]
+    None -> Error $ NoSuchMatch index
 
 type TrophyId = ContractId Trophy
 
@@ -164,7 +209,7 @@ template Tournament
       controller judge
       do
         case (applyReport bracket report) of
-          Finished judge winner -> do
+          Finished winner -> do
             trophyId <- create (Trophy judge winner)
             return $ Left trophyId
           Next newBracket -> do
