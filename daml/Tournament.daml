@@ -1,6 +1,6 @@
 module Tournament where
 
-import DA.Map (null, size, fromList, delete, empty, insert, values, Map, lookup, toList)
+import DA.Map (null, fromList, delete, empty, insert, values, Map, lookup, toList)
 import DA.Foldable (foldMap, Foldable(maximum))
 import DA.Optional (catOptionals, isNone, mapOptional)
 
@@ -60,6 +60,16 @@ data ReportResult
   | Error with
     err: BracketUpdateError
 
+data ActiveMatch
+  = ActiveBye with
+    index: MatchIndex
+    p: Party
+  | ActiveVs with
+    index: MatchIndex
+    p1: Party
+    p2: Party
+      deriving (Eq, Show)
+
 -- ========================================================
 
 bracketize: [Party] -> Bracket
@@ -75,6 +85,7 @@ nextIndex: [MatchIndex] -> MatchIndex
 nextIndex [] = 0
 nextIndex indicies = maximum indicies + 1
 
+-- TODO: Investigate different bracketing strategies
 finalize: PartialBracket -> Bracket
 finalize (PartialBracket [] m) = Empty
 finalize (PartialBracket [i] m) = NonEmpty with
@@ -91,6 +102,7 @@ finalize (PartialBracket (i1 :: i2 :: rest) matches) =
 toPartial: [Match] -> PartialBracket
 toPartial ms = foldl load emptyPartial ms
 
+-- TODO: Refactor Partial Bracket -- looks Foldable to me
 emptyPartial : PartialBracket
 emptyPartial = PartialBracket with
   round = []
@@ -104,30 +116,14 @@ load (PartialBracket r m) toLoad =
     round = r ++ [i]
     matches = insert i toLoad m
 
--- ========================================================
---      Extra Bit for Debugging / Data Egress
--- ========================================================
-
--- TODO: Add MatchIndex to ActiveMatch
--- That way we can generate a Matchreport externally
-data ActiveMatch
-  = ActiveBye with
-    p: Party
-  | ActiveVs with
-    p1: Party
-    p2: Party
-      deriving (Eq, Show)
-
-toActive: Match -> Optional ActiveMatch
-toActive m = case m of
-  Vs (PartyRef p1) (PartyRef p2) -> Some $ ActiveVs p1 p2
-  Bye(PartyRef p) -> Some $ ActiveBye p
+toActive: (MatchIndex, Match) -> Optional ActiveMatch
+toActive (index, m) = case m of
+  Vs (PartyRef p1) (PartyRef p2) -> Some $ ActiveVs index p1 p2
+  Bye(PartyRef p) -> Some $ ActiveBye index p
   _ -> None
 
 activeMatches: Bracket -> [ActiveMatch]
-activeMatches b = mapOptional toActive (values b.matches)
-
--- ========================================================
+activeMatches b = mapOptional toActive (toList b.matches)
 
 indexRefsOf: Match -> [MatchIndex]
 indexRefsOf (Bye (IndexRef i)) = [i]
@@ -164,33 +160,33 @@ playersIn: Bracket -> [Party]
 playersIn Empty = []
 playersIn (NonEmpty root matches) = foldMap partyRefsOf (values matches)
 
--- TODO: Clean
 alterIfDependentOn: MatchReport -> (MatchIndex, Match) -> (MatchIndex, Match)
-alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m@(Vs (IndexRef i) ref))
+alterIfDependentOn (MatchReport reportIndex winner) (matchindex, (Vs (IndexRef i) ref))
   | reportIndex == i = (matchindex, Vs (PartyRef winner) ref)
-alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m@(Vs ref (IndexRef i)))
+alterIfDependentOn (MatchReport reportIndex winner) (matchindex, (Vs ref (IndexRef i)))
   | reportIndex == i = (matchindex, Vs ref (PartyRef winner))
-alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m@(Bye (IndexRef i)))
+alterIfDependentOn (MatchReport reportIndex winner) (matchindex, (Bye (IndexRef i)))
   | reportIndex == i = (matchindex, Bye (PartyRef winner))
-alterIfDependentOn (MatchReport reportIndex winner) (matchindex, m) = (matchindex, m)
+alterIfDependentOn _ (matchindex, m) = (matchindex, m)
 
--- TODO: Clean
+updateMatches: Map MatchIndex Match -> MatchReport -> Map MatchIndex Match
+updateMatches matches report = do
+    let m = delete report.index matches
+        updated = map (alterIfDependentOn report) (toList m)
+    fromList updated
+
+-- TODO: Clean up similar logic in main cases
 applyReport: Bracket -> MatchReport -> ReportResult
 applyReport Empty _ = Error BracketEmpty
-applyReport (NonEmpty root matches) report@(MatchReport index winner) =
-  case (DA.Map.lookup index matches) of
-    -- The only cases we really care about
+applyReport (NonEmpty root matches) report@(MatchReport index winner) = do
+  let currentMatch = DA.Map.lookup index matches
+  case (currentMatch) of
     Some(Bye(PartyRef p)) ->
       if p == winner then
         if root == index then
           Finished winner
         else
-          do
-            let m = delete index matches
-                pairs = toList m
-                updated = map (alterIfDependentOn report) pairs
-                newMatches = fromList updated
-            Next $ (NonEmpty root newMatches)
+          Next $ (NonEmpty root (updateMatches matches report))
       else
         Error $ PlayerNotActive index winner
     Some(Vs (PartyRef p1) (PartyRef p2)) ->
@@ -198,57 +194,11 @@ applyReport (NonEmpty root matches) report@(MatchReport index winner) =
         if root == index then
           Finished winner
         else
-          do
-            let m = delete index matches
-                pairs = toList m
-                updated = map (alterIfDependentOn report) pairs
-                newMatches = fromList updated
-            Next $ (NonEmpty root newMatches)
+          Next $ (NonEmpty root (updateMatches matches report))
       else
         Error $ PlayerNotActive index winner
-    -- Dealing with inactive/missing matches
     Some(Bye(IndexRef i)) -> Error $ MatchNotReady index [i]
     Some(Vs (IndexRef i1) (IndexRef i2)) -> Error $ MatchNotReady index [i1, i2]
     Some(Vs (_) (IndexRef i)) -> Error $ MatchNotReady index [i]
     Some(Vs (IndexRef i) (_)) -> Error $ MatchNotReady index [i]
     None -> Error $ NoSuchMatch index
-
-type TrophyId = ContractId Trophy
-
-template Trophy
-  with
-    judge: Party
-    winner: Party
-  where
-    signatory judge
-    observer [judge, winner]
-
-type TournamentId = ContractId Tournament
-
-template Tournament
-  with
-    judge: Party
-    bracket: Bracket
-  where
-    ensure isWellFormed bracket
-    signatory judge
-    observer playersIn bracket
-  
-    choice Report: Either TrophyId TournamentId
-      with
-        report: MatchReport
-      controller judge
-      do
-        case (applyReport bracket report) of
-          Finished winner -> do
-            trophyId <- create (Trophy judge winner)
-            return $ Left trophyId
-          Next newBracket -> do
-            tournamentId <- create (this with bracket = newBracket)
-            return $ Right tournamentId
-          Error msg -> error (show msg)
-
-    nonconsuming choice ActiveMatches: [ActiveMatch]
-      with
-      controller judge
-      do return $ activeMatches bracket

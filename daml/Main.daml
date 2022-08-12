@@ -5,25 +5,15 @@ import DA.List (isInfixOf, unique)
 import DA.Text (asciiToLower)
 import Tournament
 
-type AssetId = ContractId Asset
+type TrophyId = ContractId Trophy
 
-template Asset
+template Trophy
   with
-    issuer : Party
-    owner  : Party
-    name   : Text
+    judge: Party
+    winner: Party
   where
-    ensure name /= ""
-    signatory issuer
-    observer owner
-    choice Give : AssetId
-      with
-        newOwner : Party
-      controller owner
-      do create this with
-           owner = newOwner
-
--- ==================================
+    signatory judge
+    observer [judge, winner]
 
 type RosterId = ContractId Roster
 
@@ -38,6 +28,8 @@ template Roster
     -- no duplicate entrants, judge may not enter
     ensure unique entrants && not ([judge] `isInfixOf` entrants)
 
+    -- TODO: Add invite mechanism to Roster to collect entrants over time
+
     choice Bracketize: TournamentId
       with
       controller judge
@@ -46,11 +38,39 @@ template Roster
           judge = judge
           bracket = bracketize entrants
 
+type TournamentId = ContractId Tournament
+
+template Tournament
+  with
+    judge: Party
+    bracket: Bracket
+  where
+    ensure isWellFormed bracket
+    signatory judge
+    observer playersIn bracket
+  
+    choice Report: Either TrophyId TournamentId
+      with
+        report: MatchReport
+      controller judge
+      do
+        case (applyReport bracket report) of
+          Finished winner -> do
+            trophyId <- create (Trophy judge winner)
+            return $ Left trophyId
+          Next newBracket -> do
+            tournamentId <- create (this with bracket = newBracket)
+            return $ Right tournamentId
+          Error msg -> error (show msg)
+
+    nonconsuming choice ActiveMatches: [ActiveMatch]
+      with
+      controller judge
+      do return $ activeMatches bracket
+
 -- ==================================
 
--- TODO: Understand the difference between ALL THIS stuff
---       and just "allocateParty" from the examples
--- For now, Just abstract it away into "setup"
+-- TODO: Understand user setup process better
 setupUser: Text -> Script Party
 setupUser name = do
   party <- allocatePartyWithHint name (PartyIdHint name)
@@ -61,22 +81,12 @@ setupUser name = do
 setupUsers: [Text] -> Script [Party]
 setupUsers names = mapA setupUser names
 
+-- ==================================
+
 setup : Script ()
 setup = script do
 
   [alice, bob, charlie, dave, elsa, frank] <- setupUsers ["Alice", "Bob", "Charlie", "Dave", "Elsa", "Frank"]
-
-  aliceTV <- submit alice do
-    createCmd Asset with
-      issuer = alice
-      owner = alice
-      name = "TV"
-
-  bobTV <- submit alice do
-    exerciseCmd aliceTV Give with newOwner = bob
-
-  submit bob do
-    exerciseCmd bobTV Give with newOwner = alice
 
   roster <- submit elsa do
     createCmd Roster with
